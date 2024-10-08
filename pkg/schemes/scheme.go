@@ -10,16 +10,18 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	apiv1 "sigs.k8s.io/gateway-api/apis/v1"
-	apiv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
 // SchemeBuilder contains all the Schemes for registering the CRDs with which Gloo Gateway interacts.
 // We share one SchemeBuilder as there's no harm in registering all I/O types internally.
 var SchemeBuilder = runtime.SchemeBuilder{
 	// K8s Gateway API resources
-	apiv1.AddToScheme,
-	apiv1beta1.AddToScheme,
+	gwapiv1.Install,
+	gwapiv1a2.Install,
+	gwapiv1b1.Install,
 
 	// Kubernetes Core resources
 	corev1.AddToScheme,

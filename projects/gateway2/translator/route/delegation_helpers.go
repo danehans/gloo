@@ -1,4 +1,4 @@
-package httproute
+package route
 
 import (
 	"path"
@@ -39,15 +39,20 @@ const inheritMatcherAnnotation = "delegation.gateway.solo.io/inherit-parent-matc
 func filterDelegatedChildren(
 	parentRef types.NamespacedName,
 	parentMatch gwv1.HTTPRouteMatch,
-	children []*query.HTTPRouteInfo,
-) []*query.HTTPRouteInfo {
+	children []*query.RouteInfo,
+) []*query.RouteInfo {
 	// Select the child routes that match the parent
-	var selected []*query.HTTPRouteInfo
+	var selected []*query.RouteInfo
 	for _, child := range children {
+		childRoute, ok := child.Object.(*gwv1.HTTPRoute)
+		if !ok {
+			// TODO (danehans) log error
+			continue
+		}
 		// make a copy; multiple parents can delegate to the same child so we can't modify a shared reference
 		child := child.Clone()
 
-		inheritMatcher := shouldInheritMatcher(&child.HTTPRoute)
+		inheritMatcher := shouldInheritMatcher(childRoute)
 
 		// Check if the child route has a prefix that matches the parent.
 		// Only rules matching the parent prefix are considered.
@@ -57,7 +62,7 @@ func filterDelegatedChildren(
 		// in the child is not valid, then we discard it in the final child route
 		// returned by this function.
 		var validRules []gwv1.HTTPRouteRule
-		for i, rule := range child.Spec.Rules {
+		for i, rule := range childRoute.Spec.Rules {
 			var validMatches []gwv1.HTTPRouteMatch
 
 			// If the child route opts to inherit the parent's matcher and it does not specify its own matcher,
@@ -73,7 +78,7 @@ func filterDelegatedChildren(
 					// the parent's matcher with the child's.
 					mergeParentChildRouteMatch(&parentMatch, &match)
 					validMatches = append(validMatches, match)
-				} else if ok := isDelegatedRouteMatch(parentMatch, parentRef, match, child.Namespace, child.Spec.ParentRefs); ok {
+				} else if ok := isDelegatedRouteMatch(parentMatch, parentRef, match, childRoute.Namespace, childRoute.Spec.ParentRefs); ok {
 					// Non-inherited matcher delegation requires matching child matcher to parent matcher
 					// to delegate from the parent route to the child.
 					validMatches = append(validMatches, match)
@@ -81,16 +86,16 @@ func filterDelegatedChildren(
 			}
 
 			// Matchers in this rule match the parent route matcher, so consider the valid matchers on the child,
-			child.Spec.Rules[i].Matches = validMatches
+			childRoute.Spec.Rules[i].Matches = validMatches
 			// and discard rules on the child that do not match the parent route matcher.
 			if len(validMatches) > 0 {
-				validRule := child.Spec.Rules[i]
+				validRule := childRoute.Spec.Rules[i]
 				validRule.Matches = validMatches
 				validRules = append(validRules, validRule)
 			}
 		}
 		if len(validRules) > 0 {
-			child.Spec.Rules = validRules
+			childRoute.Spec.Rules = validRules
 			selected = append(selected, child)
 		}
 	}

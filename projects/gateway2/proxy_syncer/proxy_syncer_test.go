@@ -57,47 +57,41 @@ func TestIsGatewayStatusEqual(t *testing.T) {
 	}
 }
 
-func TestIsHTTPRouteStatusEqual(t *testing.T) {
-	status1 := &gwv1.HTTPRouteStatus{
-		RouteStatus: gwv1.RouteStatus{
-			Parents: []gwv1.RouteParentStatus{
-				{
-					ParentRef: gwv1.ParentReference{
-						Group:     ptr.To[gwv1.Group](gwv1.Group(wellknown.GatewayGroup)),
-						Kind:      ptr.To[gwv1.Kind](gwv1.Kind(wellknown.HTTPRouteKind)),
-						Name:      "parent",
-						Namespace: ptr.To[gwv1.Namespace](gwv1.Namespace("default")),
-					},
+func TestIsRouteStatusEqual(t *testing.T) {
+	status1 := &gwv1.RouteStatus{
+		Parents: []gwv1.RouteParentStatus{
+			{
+				ParentRef: gwv1.ParentReference{
+					Group:     ptr.To[gwv1.Group](gwv1.Group(wellknown.GatewayGroup)),
+					Kind:      ptr.To[gwv1.Kind](gwv1.Kind(wellknown.HTTPRouteKind)),
+					Name:      "parent",
+					Namespace: ptr.To[gwv1.Namespace](gwv1.Namespace("default")),
 				},
 			},
 		},
 	}
 	// Same as status1
-	status2 := &gwv1.HTTPRouteStatus{
-		RouteStatus: gwv1.RouteStatus{
-			Parents: []gwv1.RouteParentStatus{
-				{
-					ParentRef: gwv1.ParentReference{
-						Group:     ptr.To[gwv1.Group](gwv1.Group(wellknown.GatewayGroup)),
-						Kind:      ptr.To[gwv1.Kind](gwv1.Kind(wellknown.HTTPRouteKind)),
-						Name:      "parent",
-						Namespace: ptr.To[gwv1.Namespace](gwv1.Namespace("default")),
-					},
+	status2 := &gwv1.RouteStatus{
+		Parents: []gwv1.RouteParentStatus{
+			{
+				ParentRef: gwv1.ParentReference{
+					Group:     ptr.To[gwv1.Group](gwv1.Group(wellknown.GatewayGroup)),
+					Kind:      ptr.To[gwv1.Kind](gwv1.Kind(wellknown.HTTPRouteKind)),
+					Name:      "parent",
+					Namespace: ptr.To[gwv1.Namespace](gwv1.Namespace("default")),
 				},
 			},
 		},
 	}
 	// Different from status1
-	status3 := &gwv1.HTTPRouteStatus{
-		RouteStatus: gwv1.RouteStatus{
-			Parents: []gwv1.RouteParentStatus{
-				{
-					ParentRef: gwv1.ParentReference{
-						Group:     ptr.To[gwv1.Group](gwv1.Group(wellknown.GatewayGroup)),
-						Kind:      ptr.To[gwv1.Kind](gwv1.Kind(wellknown.HTTPRouteKind)),
-						Name:      "parent",
-						Namespace: ptr.To[gwv1.Namespace](gwv1.Namespace("my-other-ns")),
-					},
+	status3 := &gwv1.RouteStatus{
+		Parents: []gwv1.RouteParentStatus{
+			{
+				ParentRef: gwv1.ParentReference{
+					Group:     ptr.To[gwv1.Group](gwv1.Group(wellknown.GatewayGroup)),
+					Kind:      ptr.To[gwv1.Kind](gwv1.Kind(wellknown.HTTPRouteKind)),
+					Name:      "parent",
+					Namespace: ptr.To[gwv1.Namespace](gwv1.Namespace("my-other-ns")),
 				},
 			},
 		},
@@ -105,8 +99,8 @@ func TestIsHTTPRouteStatusEqual(t *testing.T) {
 
 	tests := []struct {
 		name string
-		objA *gwv1.HTTPRouteStatus
-		objB *gwv1.HTTPRouteStatus
+		objA *gwv1.RouteStatus
+		objB *gwv1.RouteStatus
 		want bool
 	}{
 		{"EqualStatus", status1, status2, true},
@@ -115,7 +109,7 @@ func TestIsHTTPRouteStatusEqual(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isHTTPRouteStatusEqual(tt.objA, tt.objB); got != tt.want {
+			if got := isRouteStatusEqual(tt.objA, tt.objB); got != tt.want {
 				t.Errorf("isHTTPRouteStatusEqual() = %v, want %v", got, tt.want)
 			}
 		})

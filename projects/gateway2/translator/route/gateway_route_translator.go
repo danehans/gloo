@@ -1,4 +1,4 @@
-package httproute
+package route
 
 import (
 	"container/list"
@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	"github.com/solo-io/gloo/projects/gateway2/query"
 	"github.com/solo-io/gloo/projects/gateway2/reports"
@@ -33,12 +34,12 @@ var (
 	nonFunctionUpstreamWithParameterError = eris.New("parameters extensionref is only supported for aws and azure upstreams")
 )
 
-func TranslateGatewayHTTPRouteRules(
+func TranslateGatewayRouteRules(
 	ctx context.Context,
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
-	route *query.HTTPRouteInfo,
-	reporter reports.ParentRefReporter,
+	route *query.RouteInfo,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 ) []*v1.Route {
 	var finalRoutes []*v1.Route
@@ -47,13 +48,24 @@ func TranslateGatewayHTTPRouteRules(
 	// Hostnames need to be explicitly passed to the plugins since they
 	// are required by delegatee (child) routes of delegated routes that
 	// won't have spec.Hostnames set.
-	hostnames := make([]gwv1.Hostname, len(route.Spec.Hostnames))
-	copy(hostnames, route.Spec.Hostnames)
+	var hostnames []gwv1.Hostname
 
-	delegationChain := list.New()
+	switch typedRoute := route.Object.(type) {
+	case *gwv1.HTTPRoute:
+		hostnames = make([]gwv1.Hostname, len(typedRoute.Spec.Hostnames))
+		copy(hostnames, typedRoute.Spec.Hostnames)
 
-	translateGatewayHTTPRouteRulesUtil(
-		ctx, pluginRegistry, gwListener, route, reporter, baseReporter, &finalRoutes, routesVisited, hostnames, delegationChain)
+		delegationChain := list.New()
+
+		translateGatewayHTTPRouteRulesUtil(
+			ctx, pluginRegistry, gwListener, route, reporter, baseReporter, &finalRoutes, routesVisited, hostnames, delegationChain)
+	case *gwv1a2.TCPRoute:
+		// TODO (danehans): translate TCPRoute
+	default:
+		contextutils.LoggerFrom(ctx).Errorf("Unsupported route kind: %s", route.Object.GetObjectKind().GroupVersionKind().Kind)
+		return nil
+	}
+
 	return finalRoutes
 }
 
@@ -63,15 +75,20 @@ func translateGatewayHTTPRouteRulesUtil(
 	ctx context.Context,
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
-	route *query.HTTPRouteInfo,
-	reporter reports.ParentRefReporter,
+	route *query.RouteInfo,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 	outputs *[]*v1.Route,
 	routesVisited sets.Set[types.NamespacedName],
 	hostnames []gwv1.Hostname,
 	delegationChain *list.List,
 ) {
-	for ruleIdx, rule := range route.Spec.Rules {
+	hRoute, ok := route.Object.(*gwv1.HTTPRoute)
+	if !ok {
+		return
+	}
+
+	for ruleIdx, rule := range hRoute.Spec.Rules {
 		rule := rule
 		if rule.Matches == nil {
 			// from the spec:
@@ -109,10 +126,10 @@ func translateGatewayHTTPRouteRule(
 	ctx context.Context,
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
-	gwroute *query.HTTPRouteInfo,
+	gwroute *query.RouteInfo,
 	rule gwv1.HTTPRouteRule,
 	ruleIdx int,
-	reporter reports.ParentRefReporter,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 	outputs *[]*v1.Route,
 	routesVisited sets.Set[types.NamespacedName],
@@ -120,6 +137,12 @@ func translateGatewayHTTPRouteRule(
 	delegationChain *list.List,
 ) []*v1.Route {
 	routes := make([]*v1.Route, len(rule.Matches))
+
+	hRoute, ok := gwroute.Object.(*gwv1.HTTPRoute)
+	if !ok {
+		return routes
+	}
+
 	for idx, match := range rule.Matches {
 		match := match // pike
 		// HTTPRoute names are being introduced to upstream as part of https://github.com/kubernetes-sigs/gateway-api/issues/995
@@ -155,7 +178,7 @@ func translateGatewayHTTPRouteRule(
 
 		rtCtx := &plugins.RouteContext{
 			Listener:        &gwListener,
-			Route:           &gwroute.HTTPRoute,
+			HTTPRoute:       hRoute,
 			Hostnames:       hostnames,
 			DelegationChain: delegationChain,
 			Rule:            &rule,
@@ -289,10 +312,10 @@ func parsePath(path *gwv1.HTTPPathMatch) (gwv1.PathMatchType, string) {
 
 func setRouteAction(
 	ctx context.Context,
-	gwroute *query.HTTPRouteInfo,
+	gwroute *query.RouteInfo,
 	rule gwv1.HTTPRouteRule,
 	outputRoute *v1.Route,
-	reporter reports.ParentRefReporter,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
@@ -385,7 +408,7 @@ func setRouteAction(
 			}
 			spec, err := makeDestinationSpec(upstream, backendRef.Filters)
 			if err != nil {
-				reporter.SetCondition(reports.HTTPRouteCondition{
+				reporter.SetCondition(reports.RouteCondition{
 					Type:    gwv1.RouteConditionResolvedRefs,
 					Status:  metav1.ConditionFalse,
 					Reason:  gwv1.RouteReasonBackendNotFound,

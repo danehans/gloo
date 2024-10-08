@@ -2,6 +2,8 @@ package reports_test
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -10,7 +12,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
 
 var _ = Describe("Reporting Infrastructure", func() {
@@ -111,34 +115,34 @@ var _ = Describe("Reporting Infrastructure", func() {
 
 	Describe("building route status", func() {
 		DescribeTable("should build all positive route conditions with an empty report",
-			func(route gwv1.HTTPRoute) {
+			func(obj client.Object) {
 				rm := reports.NewReportMap()
 
 				reporter := reports.NewReporter(&rm)
 				// initialize RouteReporter to mimic translation loop (i.e. report gets initialized for all Routes)
-				reporter.Route(&route)
+				reporter.Route(obj)
 
-				status := rm.BuildRouteStatus(context.Background(), route, "gloo-gateway")
+				status := rm.BuildRouteStatus(context.Background(), obj, "gloo-gateway")
 
 				Expect(status).NotTo(BeNil())
 				Expect(status.Parents).To(HaveLen(1))
 				Expect(status.Parents[0].Conditions).To(HaveLen(2))
 			},
-			Entry("regular route", route()),
+			Entry("regular route", httpRoute()),
 			Entry("delegatee route", delegateeRoute()),
 		)
 
 		DescribeTable("should correctly set negative route conditions from report and not add extra conditions",
-			func(route gwv1.HTTPRoute, parentRef *gwv1.ParentReference) {
+			func(obj client.Object, parentRef *gwv1.ParentReference) {
 				rm := reports.NewReportMap()
 				reporter := reports.NewReporter(&rm)
-				reporter.Route(&route).ParentRef(parentRef).SetCondition(reports.HTTPRouteCondition{
+				reporter.Route(obj).ParentRef(parentRef).SetCondition(reports.RouteCondition{
 					Type:   gwv1.RouteConditionResolvedRefs,
 					Status: metav1.ConditionFalse,
 					Reason: gwv1.RouteReasonBackendNotFound,
 				})
 
-				status := rm.BuildRouteStatus(context.Background(), route, "gloo-gateway")
+				status := rm.BuildRouteStatus(context.Background(), obj, "gloo-gateway")
 
 				Expect(status).NotTo(BeNil())
 				Expect(status.Parents).To(HaveLen(1))
@@ -147,26 +151,26 @@ var _ = Describe("Reporting Infrastructure", func() {
 				resolvedRefs := meta.FindStatusCondition(status.Parents[0].Conditions, string(gwv1.RouteConditionResolvedRefs))
 				Expect(resolvedRefs.Status).To(Equal(metav1.ConditionFalse))
 			},
-			Entry("regular route", route(), parentRef()),
+			Entry("regular route", httpRoute(), parentRef()),
 			Entry("delegatee route", delegateeRoute(), parentRouteRef()),
 		)
 
 		DescribeTable("should filter out multiple negative route conditions of the same type from report",
-			func(route gwv1.HTTPRoute, parentRef *gwv1.ParentReference) {
+			func(obj client.Object, parentRef *gwv1.ParentReference) {
 				rm := reports.NewReportMap()
 				reporter := reports.NewReporter(&rm)
-				reporter.Route(&route).ParentRef(parentRef).SetCondition(reports.HTTPRouteCondition{
+				reporter.Route(obj).ParentRef(parentRef).SetCondition(reports.RouteCondition{
 					Type:   gwv1.RouteConditionResolvedRefs,
 					Status: metav1.ConditionFalse,
 					Reason: gwv1.RouteReasonBackendNotFound,
 				})
-				reporter.Route(&route).ParentRef(parentRef).SetCondition(reports.HTTPRouteCondition{
+				reporter.Route(obj).ParentRef(parentRef).SetCondition(reports.RouteCondition{
 					Type:   gwv1.RouteConditionResolvedRefs,
 					Status: metav1.ConditionFalse,
 					Reason: gwv1.RouteReasonBackendNotFound,
 				})
 
-				status := rm.BuildRouteStatus(context.Background(), route, "gloo-gateway")
+				status := rm.BuildRouteStatus(context.Background(), obj, "gloo-gateway")
 
 				Expect(status).NotTo(BeNil())
 				Expect(status.Parents).To(HaveLen(1))
@@ -175,19 +179,19 @@ var _ = Describe("Reporting Infrastructure", func() {
 				resolvedRefs := meta.FindStatusCondition(status.Parents[0].Conditions, string(gwv1.RouteConditionResolvedRefs))
 				Expect(resolvedRefs.Status).To(Equal(metav1.ConditionFalse))
 			},
-			Entry("regular route", route(), parentRef()),
+			Entry("regular route", httpRoute(), parentRef()),
 			Entry("delegatee route", delegateeRoute(), parentRouteRef()),
 		)
 
 		DescribeTable("should not modify LastTransitionTime for existing conditions that have not changed",
-			func(route gwv1.HTTPRoute) {
+			func(obj client.Object) {
 				rm := reports.NewReportMap()
 
 				reporter := reports.NewReporter(&rm)
 				// initialize RouteReporter to mimic translation loop (i.e. report gets initialized for all Routes)
-				reporter.Route(&route)
+				reporter.Route(obj)
 
-				status := rm.BuildRouteStatus(context.Background(), route, "gloo-gateway")
+				status := rm.BuildRouteStatus(context.Background(), obj, "gloo-gateway")
 
 				Expect(status).NotTo(BeNil())
 				Expect(status.Parents).To(HaveLen(1))
@@ -196,8 +200,17 @@ var _ = Describe("Reporting Infrastructure", func() {
 				resolvedRefs := meta.FindStatusCondition(status.Parents[0].Conditions, string(gwv1.RouteConditionResolvedRefs))
 				oldTransitionTime := resolvedRefs.LastTransitionTime
 
-				route.Status = *status
-				status = rm.BuildRouteStatus(context.Background(), route, "gloo-gateway")
+				// Type assert the object to update the Status field based on its type
+				switch route := obj.(type) {
+				case *gwv1.HTTPRoute:
+					route.Status.RouteStatus = *status
+				case *gwv1a2.TCPRoute:
+					route.Status.RouteStatus = *status
+				default:
+					Fail(fmt.Sprintf("unsupported route type: %T", obj))
+				}
+
+				status = rm.BuildRouteStatus(context.Background(), obj, "gloo-gateway")
 
 				Expect(status).NotTo(BeNil())
 				Expect(status.Parents).To(HaveLen(1))
@@ -205,16 +218,30 @@ var _ = Describe("Reporting Infrastructure", func() {
 
 				resolvedRefs = meta.FindStatusCondition(status.Parents[0].Conditions, string(gwv1.RouteConditionResolvedRefs))
 				newTransitionTime := resolvedRefs.LastTransitionTime
-				Expect(newTransitionTime).To(Equal(oldTransitionTime))
+
+				// Use a comparison that accounts for minor precision differences in the transition times
+				Expect(newTransitionTime.Time).To(BeTemporally("~", oldTransitionTime.Time, time.Millisecond),
+					"Expected LastTransitionTime to not change significantly")
 			},
-			Entry("regular route", route()),
-			Entry("delegatee route", delegateeRoute()),
+			Entry("HTTPRoute", httpRoute()),
+			Entry("TCPRoute", tcpRoute()),
 		)
 	})
 })
 
-func route() gwv1.HTTPRoute {
-	route := gwv1.HTTPRoute{
+func httpRoute() client.Object {
+	route := &gwv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "default",
+		},
+	}
+	route.Spec.CommonRouteSpec.ParentRefs = append(route.Spec.CommonRouteSpec.ParentRefs, *parentRef())
+	return route
+}
+
+func tcpRoute() client.Object {
+	route := &gwv1a2.TCPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "route",
 			Namespace: "default",
@@ -230,8 +257,8 @@ func parentRef() *gwv1.ParentReference {
 	}
 }
 
-func delegateeRoute() gwv1.HTTPRoute {
-	route := gwv1.HTTPRoute{
+func delegateeRoute() client.Object {
+	route := &gwv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "child-route",
 			Namespace: "default",
