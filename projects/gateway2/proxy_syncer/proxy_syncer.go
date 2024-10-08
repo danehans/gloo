@@ -19,10 +19,13 @@ import (
 	"github.com/solo-io/go-utils/contextutils"
 	"github.com/solo-io/solo-kit/pkg/api/v1/clients"
 	"github.com/solo-io/solo-kit/pkg/utils/statusutils"
+	//"k8s.io/client-go/kubernetes"
+	//"k8s.io/client-go/rest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
 
 // QueueStatusForProxiesFn queues a list of proxies to be synced and the plugin registry that produced them for a given sync iteration
@@ -164,7 +167,6 @@ func (s *ProxySyncer) Start(ctx context.Context) error {
 
 		s.queueStatusForProxies(ctx, proxies, &pluginRegistry, totalResyncs)
 		s.syncStatus(ctx, rm, gwl)
-		s.syncRouteStatus(ctx, rm)
 		s.reconcileProxies(ctx, proxies)
 	}
 
@@ -186,31 +188,64 @@ func (s *ProxySyncer) syncRouteStatus(ctx context.Context, rm reports.ReportMap)
 	ctx = contextutils.WithLogger(ctx, "routeStatusSyncer")
 	logger := contextutils.LoggerFrom(ctx)
 	logger.Debugf("syncing k8s gateway route status")
-	stopwatch := statsutils.NewTranslatorStopWatch("HTTPRouteStatusSyncer")
+	stopwatch := statsutils.NewTranslatorStopWatch("RouteStatusSyncer")
 	stopwatch.Start()
 	defer stopwatch.Stop(ctx)
 
-	// Sometimes the List returns stale (cached) httproutes, causing the status update to fail
-	// with "the object has been modified" errors. Therefore we try the status updates in a retry loop.
+	restConfig := s.mgr.GetConfig()
+	// Sometimes the List returns stale (cached) routes, causing the status update to fail
+	// with "the object has been modified" errors. Therefore, we try the status updates in a retry loop.
 	err := retry.Do(func() error {
-		rl := gwv1.HTTPRouteList{}
-		err := s.mgr.GetClient().List(ctx, &rl)
-		if err != nil {
-			// log this at error level because this is not an expected error
-			logger.Error(err)
-			return err
+		// Define the list of supported route types
+		routeListTypes := []client.ObjectList{
+			&gwv1.HTTPRouteList{},
 		}
 
-		for _, route := range rl.Items {
-			route := route // pike
-			if status := rm.BuildRouteStatus(ctx, route, s.controllerName); status != nil {
-				if !isHTTPRouteStatusEqual(&route.Status, status) {
-					route.Status = *status
-					if err := s.mgr.GetClient().Status().Update(ctx, &route); err != nil {
-						// log this as debug, since we will retry
-						logger.Debugw("httproute status update attempt failed", "error", err,
-							"httproute", fmt.Sprintf("%s.%s", route.GetNamespace(), route.GetName()))
-						return err
+		// Check if TCPRoute is supported and only add it to the list if it exists
+		if isResourceSupported(ctx, restConfig, "tcproutes", "gateway.networking.k8s.io/v1alpha2") {
+			routeListTypes = append(routeListTypes, &gwv1a2.TCPRouteList{})
+		}
+
+		for _, list := range routeListTypes {
+			err := s.mgr.GetClient().List(ctx, list)
+			if err != nil {
+				// log this at error level because this is not an expected error
+				logger.Error(err)
+				return err
+			}
+
+			items, err := getRouteItems(list)
+			if err != nil {
+				logger.Error(err)
+				return err
+			}
+
+			for _, obj := range items {
+				// Build the route status from the report map
+				if status := rm.BuildRouteStatus(ctx, obj, s.controllerName); status != nil {
+					// Extract the current RouteStatus from the object based on its type
+					var currentStatus *gwv1.RouteStatus
+					switch route := obj.(type) {
+					case *gwv1.HTTPRoute:
+						currentStatus = &route.Status.RouteStatus
+					case *gwv1a2.TCPRoute:
+						currentStatus = &route.Status.RouteStatus
+					default:
+						logger.Warnf("unsupported route type: %T", obj)
+						continue
+					}
+
+					// Compare the current status with the generated status and update if they differ
+					if !isRouteStatusEqual(currentStatus, status) {
+						if err := updateRouteStatus(ctx, obj, status, s.mgr.GetClient()); err != nil {
+							logger.Debugw("status update attempt failed",
+							"kind",	obj.GetObjectKind(),
+							"error", err,
+							"namespace", obj.GetNamespace(),
+							"name", obj.GetName(),
+							)
+							return err
+						}
 					}
 				}
 			}
@@ -223,11 +258,30 @@ func (s *ProxySyncer) syncRouteStatus(ctx context.Context, rm reports.ReportMap)
 		retry.DelayType(retry.BackOffDelay),
 	)
 	if err != nil {
-		logger.Errorw("all attempts failed at updating httproute statuses", "error", err)
+		logger.Errorw("all attempts failed at updating route statuses", "error", err)
 	}
 }
 
-// syncStatus updates the status of the Gateway CRs
+// Helper function to update the status of a route
+func updateRouteStatus(ctx context.Context, obj client.Object, status *gwv1.RouteStatus, client client.Client) error {
+	switch route := obj.(type) {
+	case *gwv1.HTTPRoute:
+		route.Status = gwv1.HTTPRouteStatus{RouteStatus: *status}
+		return client.Status().Update(ctx, route)
+	case *gwv1a2.TCPRoute:
+		route.Status = gwv1a2.TCPRouteStatus{RouteStatus: *status}
+		return client.Status().Update(ctx, route)
+	default:
+		return fmt.Errorf("unsupported route type %T", obj)
+	}
+}
+
+// isRouteStatusEqual checks if the two route statuses are equal
+func isRouteStatusEqual(statusA, statusB *gwv1.RouteStatus) bool {
+	return cmp.Equal(statusA, statusB)
+}
+
+// syncStatus updates the status of the Gateway and xRoute CRs
 func (s *ProxySyncer) syncStatus(ctx context.Context, rm reports.ReportMap, gwl gwv1.GatewayList) {
 	ctx = contextutils.WithLogger(ctx, "statusSyncer")
 	logger := contextutils.LoggerFrom(ctx)
@@ -246,6 +300,8 @@ func (s *ProxySyncer) syncStatus(ctx context.Context, rm reports.ReportMap, gwl 
 			}
 		}
 	}
+
+	s.syncRouteStatus(ctx, rm)
 }
 
 // reconcileProxies persists the proxies that were generated during translations and stores them in an in-memory cache
@@ -301,9 +357,8 @@ func isGatewayStatusEqual(objA, objB *gwv1.GatewayStatus) bool {
 	return false
 }
 
-func isHTTPRouteStatusEqual(objA, objB *gwv1.HTTPRouteStatus) bool {
-	if cmp.Equal(objA, objB, opts) {
-		return true
-	}
-	return false
+// compareRouteStatus compares two RouteStatus objects directly
+func compareRouteStatus(objA, objB *gwv1.RouteStatus) bool {
+	// Use cmp.Equal or any other comparison logic here
+	return cmp.Equal(objA, objB, opts)
 }

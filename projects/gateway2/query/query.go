@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/solo-io/gloo/projects/gateway2/wellknown"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -14,8 +13,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	apiv1 "sigs.k8s.io/gateway-api/apis/v1"
-	apiv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+
+	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gwv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+
+	"github.com/solo-io/gloo/projects/gateway2/wellknown"
 )
 
 var (
@@ -30,7 +33,7 @@ var (
 )
 
 type Error struct {
-	Reason apiv1.RouteConditionReason
+	Reason gwv1a2.RouteConditionReason
 	E      error
 }
 
@@ -117,16 +120,16 @@ type GatewayQueries interface {
 	// Given a backendRef that resides in namespace obj, return the service that backs it.
 	// This will error with `ErrMissingReferenceGrant` if there is no reference grant allowing the reference
 	// return value depends on the group/kind in the backendRef.
-	GetBackendForRef(ctx context.Context, obj From, backendRef *apiv1.BackendObjectReference) (client.Object, error)
+	GetBackendForRef(ctx context.Context, obj From, backendRef *gwv1.BackendObjectReference) (client.Object, error)
 
-	GetSecretForRef(ctx context.Context, obj From, secretRef apiv1.SecretObjectReference) (client.Object, error)
+	GetSecretForRef(ctx context.Context, obj From, secretRef gwv1.SecretObjectReference) (client.Object, error)
 
-	GetLocalObjRef(ctx context.Context, from From, localObjRef apiv1.LocalObjectReference) (client.Object, error)
+	GetLocalObjRef(ctx context.Context, from From, localObjRef gwv1.LocalObjectReference) (client.Object, error)
 
-	// GetRoutesForGateway finds the top level HTTPRoutes attached to a Gateway
-	GetRoutesForGateway(ctx context.Context, gw *apiv1.Gateway) (RoutesForGwResult, error)
-	// GetHTTPRouteChain resolves backends and delegated routes for a HTTPRoute
-	GetHTTPRouteChain(ctx context.Context, route apiv1.HTTPRoute, hostnames []string, parentRef apiv1.ParentReference) *HTTPRouteInfo
+	// GetRoutesForGateway finds the top level xRoutes attached to the provided Gateway
+	GetRoutesForGateway(ctx context.Context, gw *gwv1.Gateway) (*RoutesForGwResult, error)
+	// GetRouteChain resolves backends and delegated routes for a the provided xRoute object
+	GetRouteChain(ctx context.Context, obj client.Object, hostnames []string, parentRef gwv1.ParentReference) *RouteInfo
 }
 
 type RoutesForGwResult struct {
@@ -137,13 +140,32 @@ type RoutesForGwResult struct {
 
 type ListenerResult struct {
 	Error  error
-	Routes []*HTTPRouteInfo
+	Routes []*RouteInfo
 }
 
 type RouteError struct {
-	Route     apiv1.HTTPRoute
-	ParentRef apiv1.ParentReference
+	Route     client.Object
+	ParentRef gwv1.ParentReference
 	Error     Error
+}
+
+// NewRoutesForGwResult creates a new instance of RoutesForGwResult with initialized fields.
+func NewRoutesForGwResult() *RoutesForGwResult {
+	return &RoutesForGwResult{
+		ListenerResults: make(map[string]*ListenerResult),
+		RouteErrors:     []*RouteError{},
+	}
+}
+
+// AddRouteError adds a new RouteError to the RoutesForGwResult.
+func (r *RoutesForGwResult) AddRouteError(obj client.Object, ref gwv1.ParentReference, err error, reason gwv1.RouteConditionReason) {
+    fmt.Printf("AddRouteError called: obj=%s, ref=%s, error=%s, reason=%s\n", obj.GetName(), ref.Name, err.Error(), reason)
+    r.RouteErrors = append(r.RouteErrors, &RouteError{
+        Route:     obj,
+        ParentRef: ref,
+        Error:     Error{E: err, Reason: reason},
+    })
+    fmt.Printf("RouteErrors length after append: %d\n", len(r.RouteErrors))
 }
 
 func NewData(c client.Client, scheme *runtime.Scheme) GatewayQueries {
@@ -156,7 +178,7 @@ type gatewayQueries struct {
 }
 
 func (r *gatewayQueries) referenceAllowed(ctx context.Context, from metav1.GroupKind, fromns string, to metav1.GroupKind, tons, toname string) (bool, error) {
-	var list apiv1beta1.ReferenceGrantList
+	var list gwv1b1.ReferenceGrantList
 	err := r.client.List(ctx, &list, client.InNamespace(tons), client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector(ReferenceGrantFromField, fromns)})
 	if err != nil {
 		return false, err
@@ -169,7 +191,7 @@ func (r *gatewayQueries) ObjToFrom(obj client.Object) From {
 	return FromObject{Object: obj, Scheme: r.scheme}
 }
 
-func parentRefMatchListener(ref apiv1.ParentReference, l *apiv1.Listener) bool {
+func parentRefMatchListener(ref gwv1.ParentReference, l *gwv1.Listener) bool {
 	if ref.Port != nil && *ref.Port != l.Port {
 		return false
 	}
@@ -179,29 +201,56 @@ func parentRefMatchListener(ref apiv1.ParentReference, l *apiv1.Listener) bool {
 	return true
 }
 
-func getParentRefsForGw(gw *apiv1.Gateway, hr *apiv1.HTTPRoute) []apiv1.ParentReference {
-	var ret []apiv1.ParentReference
-	for _, pRef := range hr.Spec.ParentRefs {
+// getParentRefsForGw extracts the ParentReferences for the given Gateway from the provided object.
+// Supported object types are:
+//
+//  * HTTPRoute
+//  * TCPRoute
+//
+func getParentRefsForGw(gw *gwv1.Gateway, obj client.Object) []gwv1.ParentReference {
+	var ret []gwv1.ParentReference
 
-		if pRef.Group != nil && *pRef.Group != "gateway.networking.k8s.io" {
-			continue
-		}
-		if pRef.Kind != nil && *pRef.Kind != "Gateway" {
-			continue
-		}
-		ns := hr.Namespace
-		if pRef.Namespace != nil {
-			ns = string(*pRef.Namespace)
-		}
-
-		if ns == gw.Namespace && string(pRef.Name) == gw.Name {
+	switch r := obj.(type) {
+	case *gwv1.HTTPRoute:
+		for _, pRef := range r.Spec.ParentRefs {
+			if !isParentReferenceForGw(pRef, gw, r.Namespace) {
+				continue
+			}
 			ret = append(ret, pRef)
 		}
+	case *gwv1a2.TCPRoute:
+		for _, pRef := range r.Spec.ParentRefs {
+			if !isParentReferenceForGw(pRef, gw, r.Namespace) {
+				continue
+			}
+			ret = append(ret, pRef)
+		}
+	default:
+		panic(fmt.Sprintf("unsupported type %T provided to getParentRefsForGw. Expected HTTPRoute or TCPRoute", obj))
 	}
+
 	return ret
 }
 
-func hostnameIntersect(l *apiv1.Listener, hr *apiv1.HTTPRoute) (bool, []string) {
+// isParentReferenceForGw checks if a ParentReference is associated with the given Gateway.
+func isParentReferenceForGw(pRef gwv1.ParentReference, gw *gwv1.Gateway, defaultNs string) bool {
+	if pRef.Group != nil && *pRef.Group != gwv1.GroupName {
+		return false
+	}
+	if pRef.Kind != nil && *pRef.Kind != wellknown.GatewayKind {
+		return false
+	}
+
+	ns := defaultNs
+	if pRef.Namespace != nil {
+		ns = string(*pRef.Namespace)
+	}
+
+	return ns == gw.Namespace && string(pRef.Name) == gw.Name
+}
+
+
+func hostnameIntersect(l *gwv1.Listener, hr *gwv1.HTTPRoute) (bool, []string) {
 	var hostnames []string
 	if l.Hostname == nil {
 		for _, h := range hr.Spec.Hostnames {
@@ -245,7 +294,7 @@ func hostnameIntersect(l *apiv1.Listener, hr *apiv1.HTTPRoute) (bool, []string) 
 	return false, nil
 }
 
-func (r *gatewayQueries) GetSecretForRef(ctx context.Context, obj From, secretRef apiv1.SecretObjectReference) (client.Object, error) {
+func (r *gatewayQueries) GetSecretForRef(ctx context.Context, obj From, secretRef gwv1.SecretObjectReference) (client.Object, error) {
 	secretKind := "Secret"
 	secretGroup := ""
 
@@ -260,7 +309,7 @@ func (r *gatewayQueries) GetSecretForRef(ctx context.Context, obj From, secretRe
 	return r.getRef(ctx, obj, string(secretRef.Name), secretRef.Namespace, secretGK)
 }
 
-func (r *gatewayQueries) GetLocalObjRef(ctx context.Context, obj From, localObjRef apiv1.LocalObjectReference) (client.Object, error) {
+func (r *gatewayQueries) GetLocalObjRef(ctx context.Context, obj From, localObjRef gwv1.LocalObjectReference) (client.Object, error) {
 	refGroup := ""
 	if localObjRef.Group != "" {
 		refGroup = string(localObjRef.Group)
@@ -275,7 +324,7 @@ func (r *gatewayQueries) GetLocalObjRef(ctx context.Context, obj From, localObjR
 	return r.getRef(ctx, obj, string(localObjRef.Name), nil, localObjGK)
 }
 
-func (r *gatewayQueries) GetBackendForRef(ctx context.Context, obj From, backend *apiv1.BackendObjectReference) (client.Object, error) {
+func (r *gatewayQueries) GetBackendForRef(ctx context.Context, obj From, backend *gwv1.BackendObjectReference) (client.Object, error) {
 	backendKind := "Service"
 	backendGroup := ""
 
@@ -290,7 +339,7 @@ func (r *gatewayQueries) GetBackendForRef(ctx context.Context, obj From, backend
 	return r.getRef(ctx, obj, string(backend.Name), backend.Namespace, backendGK)
 }
 
-func (r *gatewayQueries) getRef(ctx context.Context, from From, backendName string, backendNS *apiv1.Namespace, backendGK metav1.GroupKind) (client.Object, error) {
+func (r *gatewayQueries) getRef(ctx context.Context, from From, backendName string, backendNS *gwv1.Namespace, backendGK metav1.GroupKind) (client.Object, error) {
 	fromNs := from.Namespace()
 	if fromNs == "" {
 		fromNs = "default"
@@ -337,15 +386,39 @@ func (r *gatewayQueries) getRef(ctx context.Context, from From, backendName stri
 	return ret, nil
 }
 
+/*func isRouteKindAllowed(group, kind string, allowedKinds []metav1.GroupKind) bool {
+	// Loop through each allowed kind to see if it matches the provided group and kind
+	for _, allowedKind := range allowedKinds {
+		allowedGroup := allowedKind.Group
+		// Set default group to the Gateway API group if no group is specified in the allowedKinds list
+		if allowedGroup == "" {
+			allowedGroup = apiv1.GroupName
+		}
+
+		// Check if both group and kind match the allowed values
+		if allowedGroup == group && allowedKind.Kind == kind {
+			return true
+		}
+	}
+
+	// If no match is found, log the mismatch for debugging purposes
+	fmt.Printf("Route kind %s in group %s is not allowed by the listener configuration.\n", kind, group)
+	return false
+}*/
+
 func isHttpRouteAllowed(allowedKinds []metav1.GroupKind) bool {
-	return isRouteAllowed(apiv1.GroupName, wellknown.HTTPRouteKind, allowedKinds)
+	return isRouteAllowed(gwv1.GroupName, wellknown.HTTPRouteKind, allowedKinds)
+}
+
+func isTcpRouteAllowed(allowedKinds []metav1.GroupKind) bool {
+	return isRouteAllowed(gwv1.GroupName, wellknown.TCPRouteKind, allowedKinds)
 }
 
 func isRouteAllowed(group, kind string, allowedKinds []metav1.GroupKind) bool {
 	for _, k := range allowedKinds {
 		var allowedGroup string = k.Group
 		if allowedGroup == "" {
-			allowedGroup = apiv1.GroupName
+			allowedGroup = gwv1.GroupName
 		}
 
 		if allowedGroup == group && k.Kind == kind {
@@ -375,7 +448,7 @@ func (r *gatewayQueries) NamespaceSelector(sel labels.Selector) func(string) boo
 	}
 }
 
-func ReferenceAllowed(ctx context.Context, fromgk metav1.GroupKind, fromns string, togk metav1.GroupKind, toname string, grantsInToNs []apiv1beta1.ReferenceGrant) bool {
+func ReferenceAllowed(ctx context.Context, fromgk metav1.GroupKind, fromns string, togk metav1.GroupKind, toname string, grantsInToNs []gwv1b1.ReferenceGrant) bool {
 	for _, refGrant := range grantsInToNs {
 		for _, from := range refGrant.Spec.From {
 			if string(from.Namespace) != fromns {
@@ -404,4 +477,13 @@ func coreIfEmpty(s string) string {
 		return "core"
 	}
 	return s
+}
+
+type Namespaced interface {
+	GetName() string
+	GetNamespace() string
+}
+
+func namespacedName(o Namespaced) types.NamespacedName {
+	return types.NamespacedName{Name: o.GetName(), Namespace: o.GetNamespace()}
 }

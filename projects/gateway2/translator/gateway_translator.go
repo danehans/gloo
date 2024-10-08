@@ -52,7 +52,7 @@ func (t *translator) TranslateProxy(
 	stopwatch.Start()
 	defer stopwatch.Stop(ctx)
 
-	routesForGw, err := t.queries.GetRoutesForGateway(ctx, gateway)
+	routesForGw, err := t.queries.GetHTTPRoutesForGateway(ctx, gateway)
 	if err != nil {
 		// TODO(ilackarms): fill in the specific error / validation
 		// reporter.Gateway(gateway).Err(err.Error())

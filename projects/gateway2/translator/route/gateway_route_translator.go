@@ -1,4 +1,4 @@
-package httproute
+package route
 
 import (
 	"container/list"
@@ -38,7 +38,7 @@ func TranslateGatewayHTTPRouteRules(
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
 	route *query.HTTPRouteInfo,
-	reporter reports.ParentRefReporter,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 ) []*v1.Route {
 	var finalRoutes []*v1.Route
@@ -64,7 +64,7 @@ func translateGatewayHTTPRouteRulesUtil(
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
 	route *query.HTTPRouteInfo,
-	reporter reports.ParentRefReporter,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 	outputs *[]*v1.Route,
 	routesVisited sets.Set[types.NamespacedName],
@@ -112,7 +112,7 @@ func translateGatewayHTTPRouteRule(
 	gwroute *query.HTTPRouteInfo,
 	rule gwv1.HTTPRouteRule,
 	ruleIdx int,
-	reporter reports.ParentRefReporter,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 	outputs *[]*v1.Route,
 	routesVisited sets.Set[types.NamespacedName],
@@ -292,7 +292,7 @@ func setRouteAction(
 	gwroute *query.HTTPRouteInfo,
 	rule gwv1.HTTPRouteRule,
 	outputRoute *v1.Route,
-	reporter reports.ParentRefReporter,
+	reporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
@@ -385,7 +385,7 @@ func setRouteAction(
 			}
 			spec, err := makeDestinationSpec(upstream, backendRef.Filters)
 			if err != nil {
-				reporter.SetCondition(reports.HTTPRouteCondition{
+				reporter.SetCondition(reports.RouteCondition{
 					Type:    gwv1.RouteConditionResolvedRefs,
 					Status:  metav1.ConditionFalse,
 					Reason:  gwv1.RouteReasonBackendNotFound,

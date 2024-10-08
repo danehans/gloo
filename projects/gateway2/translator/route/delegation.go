@@ -1,4 +1,4 @@
-package httproute
+package route
 
 import (
 	"container/list"
@@ -31,7 +31,7 @@ func flattenDelegatedRoutes(
 	ctx context.Context,
 	parent *query.HTTPRouteInfo,
 	backendRef gwv1.HTTPBackendRef,
-	parentReporter reports.ParentRefReporter,
+	parentReporter reports.RouteParentRefReporter,
 	baseReporter reports.Reporter,
 	pluginRegistry registry.PluginRegistry,
 	gwListener gwv1.Listener,
@@ -72,7 +72,7 @@ func flattenDelegatedRoutes(
 			msg := fmt.Sprintf("cyclic reference detected while evaluating delegated routes for parent: %s; child route %s will be ignored",
 				parentRef, childRef)
 			contextutils.LoggerFrom(ctx).Warn(msg)
-			parentReporter.SetCondition(reports.HTTPRouteCondition{
+			parentReporter.SetCondition(reports.RouteCondition{
 				Type:    gwv1.RouteConditionResolvedRefs,
 				Status:  metav1.ConditionFalse,
 				Reason:  gwv1.RouteReasonRefNotPermitted,
@@ -90,7 +90,7 @@ func flattenDelegatedRoutes(
 		})
 
 		if err := validateChildRoute(child.HTTPRoute); err != nil {
-			reporter.SetCondition(reports.HTTPRouteCondition{
+			reporter.SetCondition(reports.RouteCondition{
 				Type:    gwv1.RouteConditionAccepted,
 				Status:  metav1.ConditionFalse,
 				Reason:  gwv1.RouteReasonUnsupportedValue,

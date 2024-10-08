@@ -187,7 +187,7 @@ func (p *plugin) handleAttachment(
 		switch {
 		case errors.Is(err, utils.ErrTypesNotEqual):
 		default:
-			routeCtx.Reporter.SetCondition(reports.HTTPRouteCondition{
+			routeCtx.Reporter.SetCondition(reports.RouteCondition{
 				Type:    gwv1.RouteConditionResolvedRefs,
 				Status:  metav1.ConditionFalse,
 				Reason:  gwv1.RouteReasonBackendNotFound,

@@ -82,10 +82,10 @@ func (mr *MockGatewayQueriesMockRecorder) GetLocalObjRef(arg0, arg1, arg2 interf
 }
 
 // GetRoutesForGateway mocks base method.
-func (m *MockGatewayQueries) GetRoutesForGateway(arg0 context.Context, arg1 *v1.Gateway) (query.RoutesForGwResult, error) {
+func (m *MockGatewayQueries) GetRoutesForGateway(arg0 context.Context, arg1 *v1.Gateway) (query.HTTPRoutesForGwResult, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetRoutesForGateway", arg0, arg1)
-	ret0, _ := ret[0].(query.RoutesForGwResult)
+	ret0, _ := ret[0].(query.HTTPRoutesForGwResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

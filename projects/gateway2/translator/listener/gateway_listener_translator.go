@@ -3,6 +3,7 @@ package listener
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/solo-io/gloo/projects/gateway2/translator/plugins"
@@ -15,7 +16,7 @@ import (
 	"github.com/solo-io/gloo/projects/gateway2/ports"
 	"github.com/solo-io/gloo/projects/gateway2/query"
 	"github.com/solo-io/gloo/projects/gateway2/reports"
-	"github.com/solo-io/gloo/projects/gateway2/translator/httproute"
+	"github.com/solo-io/gloo/projects/gateway2/translator/route"
 	"github.com/solo-io/gloo/projects/gateway2/translator/routeutils"
 	v1 "github.com/solo-io/gloo/projects/gloo/pkg/api/v1"
 	"github.com/solo-io/gloo/projects/gloo/pkg/api/v1/ssl"
@@ -55,18 +56,25 @@ func mergeGWListeners(
 		queries:          queries,
 	}
 	for _, listener := range listeners {
-		result, ok := routesForGw.ListenerResults[string(listener.Name)]
-		if !ok || result.Error != nil {
-			// TODO report
-			// TODO, if Error is not nil, this is a user-config error on selectors
-			// continue
+		switch listener.Protocol {
+		case gwv1.HTTPProtocolType:
+			result, ok := routesForGw.HTTPRoutes.ListenerResults[string(listener.Name)]
+			if !ok || result.Error != nil {
+				// TODO report
+				// TODO, if Error is not nil, this is a user-config error on selectors
+				// continue
+			}
+			listenerReporter := reporter.Listener(&listener)
+			var routes []*query.HTTPRouteInfo
+			if result != nil {
+				routes = result.Routes
+			}
+			ml.appendListener(listener, routes, listenerReporter)
+		case gwv1.HTTPSProtocolType:
+		case gwv1.TCPProtocolType:
+		default:
+			panic(fmt.Sprintf("wrong type listener protocol %T provided. expected HTTP, HTTPS or TCP", listener.Protocol))
 		}
-		listenerReporter := reporter.Listener(&listener)
-		var routes []*query.HTTPRouteInfo
-		if result != nil {
-			routes = result.Routes
-		}
-		ml.appendListener(listener, routes, listenerReporter)
 	}
 	return ml
 }
